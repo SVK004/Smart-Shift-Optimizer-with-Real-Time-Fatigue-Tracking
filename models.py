@@ -11,6 +11,7 @@ class Employee(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255))
     availability = Column(JSON)
+    skills = Column(JSON)
     maxWeeklyHours = Column(Float)
     fatigue = Column(Integer, default=0)
     hoursWorked = Column(Float, default=0)

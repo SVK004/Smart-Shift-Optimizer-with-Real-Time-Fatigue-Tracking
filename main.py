@@ -18,7 +18,7 @@ class User(BaseModel):
     recentShift : List[datetime] = Field(default_factory=list)
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class Tasks(BaseModel):
     skills : set[str]
@@ -28,10 +28,7 @@ class Tasks(BaseModel):
     end : datetime = Field(default_factory=lambda: datetime.min)
 
     class Config:
-        orm_mode = True
-
-employees : List[User] = []
-tasks : List[Tasks] = []
+        from_attributes = True
 
 Base.metadata.create_all(bind=engine)
 
@@ -42,109 +39,84 @@ def get_db():
     finally:
         db.close()
 
+app = FastAPI()
 
-def load_Employees():
-    global employees
-    db = next(get_db())
-
-    db_employees = db.query(DBEmployee).all()
-
-    employees = [
-        User(
-            id=u.id,
-            name=u.name,
-            availability=u.availability,
-            skills=set(u.skills.split(",")),
-            maxWeeklyHours=u.maxWeeklyHours,
-            fatigue=u.fatigue,
-            hoursWorked=u.hoursWorked,
-            recentShift=u.recentShift
-        ) for u in db_employees
-    ]
-
-
-def load_Tasks():
-    global tasks
-    db = next(get_db())
-
-    db_tasks = db.query(DBTask).all()
-    tasks = [
-        Tasks(
-            skills=set(t.skills.split(",")),
-            time=t.time,
-            hoursRequired=t.hoursRequired,
-            members=t.members,
-            end=t.end
-        )
-        for t in db_tasks
-    ]
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    print("INFO:     Loading data on startup...")
-
-    load_Employees()
-    load_Tasks()
-
-    print("INFO:     Data loading complete.")
-    yield
-
-app = FastAPI(lifespan=lifespan)
-
-@app.get("/employees")
-def print_employees():
+@app.get("/employees", response_model=List[User])
+def print_employees(db: Session = Depends(get_db)):
+    employees = db.query(DBEmployee).all()
     return employees
 
 
-@app.post("/employees")
-def add_user(user : User):
-    # mod_user = {"ind" : ind+1, **user}
-    # employees.append(mod_user)
-    # return mod_user
+@app.post("/employees", response_model=User, status_code=201)
+def add_user(user : User, db: Session = Depends(get_db)):
 
-    for i in employees:
-        if i.id == user.id:
-            return "User already exists..."
+    existing_employees = db.query(DBEmployee).filter(DBEmployee.id == user.id).first()
+    if existing_employees:
+        raise HTTPException(status_code=400, detail="Employee with this ID already exists...")
+    
+    availability_as_strings = [d.isoformat() for d in user.availability]
+    
+    new_employee = DBEmployee(
+        id=user.id,
+        name=user.name,
+        availability=availability_as_strings,
+        skills=list(user.skills), 
+        maxWeeklyHours=user.maxWeeklyHours
+    )
 
-    mod_user = user.model_copy(update={"fatigue": 0, "hoursWorked": 0, "recentShift": []})
-    employees.append(mod_user)
-    return mod_user
+    db.add(new_employee)
+    db.commit()
+    db.refresh(new_employee)
+
+    return new_employee
 
 @app.get("/employees/{id}")
 def get_user_by_id(id : int, db: Session = Depends(get_db)):
-    for i in employees:
-        if i.id == id:
-            return i
+    employee = db.query(DBEmployee).filter(DBEmployee.id == id).first()
+
+    if employee is None:
+        raise HTTPException(status_code=404, detail="Employee not found")
     
-    return "User not exists"
+    return employee
 
 @app.post("/task")
-def allote_members(task : Tasks):
-    global employees
-    task = task.model_copy(update={"end": task.time + timedelta(hours=task.hoursRequired)})
+def allote_members(task : Tasks, db: Session = Depends(get_db)):
+    task.end = task.time + timedelta(hours=task.hoursRequired)
+    employees = db.query(DBEmployee).all()
     sorted_employees = sorted(employees, key = lambda i : i.fatigue)
-    alloted : List[User] = []
-    for i in sorted_employees:
+    alloted : List[DBEmployee] = []
+    for employee in sorted_employees:
         if(len(alloted) >= task.members): 
-            return alloted
+            break
         
-        if task.skills.issubset(i.skills):
-            if i.recentShift and (task.end - i.recentShift[-1]).days >= 7:
-                i.fatigue = 0
-                i.hoursWorked = 0
-            if (i.recentShift and i.recentShift[-1] >= task.time )or i.fatigue >= 4: continue
-            new_fatigue = i.fatigue
-            if i.recentShift and (task.end - i.recentShift[-1]).total_seconds() <= 86400: new_fatigue += 1
-            if i.hoursWorked + task.hoursRequired > i.maxWeeklyHours: new_fatigue += 2
+        if task.skills.issubset(employee.skills):
+            recent_shifts_as_dates = [datetime.fromisoformat(s) for s in employee.recentShift]
+            if recent_shifts_as_dates and (task.end - recent_shifts_as_dates[-1]).days >= 7:
+                employee.fatigue = 0
+                employee.hoursWorked = 0
+
+            if (recent_shifts_as_dates and recent_shifts_as_dates[-1] >= task.time )or employee.fatigue >= 4: continue
+            
+            new_fatigue = employee.fatigue
+
+            if recent_shifts_as_dates and (task.end - recent_shifts_as_dates[-1]).total_seconds() <= 86400: new_fatigue += 1
+            if employee.hoursWorked + task.hoursRequired > employee.maxWeeklyHours: new_fatigue += 2
 
             if new_fatigue >= 4: continue
 
-            i.hoursWorked += task.hoursRequired
-            i.fatigue = new_fatigue
-            i.recentShift.append(task.end)
-            alloted.append(i)
+            employee.hoursWorked += task.hoursRequired
+            employee.fatigue = new_fatigue
+            new_shift_as_string = task.end.isoformat()
+            current_shifts = employee.recentShift or []
+            employee.recentShift = current_shifts + [new_shift_as_string]
+            alloted.append(employee)
+            print(alloted[0].name)
 
-    if(len(alloted) >= task.members):
-        employees = sorted_employees
-        return alloted
-    return "There are less number of employees to complete the task..."
+    if(len(alloted) < task.members):
+        raise HTTPException(status_code=409, detail="Not suitable employees...")
+    
+    db.commit()
+    print(len(alloted))
+    for emp in alloted:
+        db.refresh(emp)
+    return alloted
