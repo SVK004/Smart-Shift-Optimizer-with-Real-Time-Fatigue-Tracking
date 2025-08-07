@@ -1,4 +1,8 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException
+from contextlib import asynccontextmanager
+from sqlalchemy.orm import Session
+from database import sessionLocal, engine
+from models import Base, Employee as DBEmployee, Task as DBTask
 from pydantic import BaseModel, Field
 from typing import List
 from datetime import date, datetime, timedelta
@@ -13,6 +17,9 @@ class User(BaseModel):
     hoursWorked : float = 0.0
     recentShift : List[datetime] = Field(default_factory=list)
 
+    class Config:
+        orm_mode = True
+
 class Tasks(BaseModel):
     skills : set[str]
     time : datetime
@@ -20,34 +27,92 @@ class Tasks(BaseModel):
     members : int
     end : datetime = Field(default_factory=lambda: datetime.min)
 
-users : List[User] = []
+    class Config:
+        orm_mode = True
+
+employees : List[User] = []
+tasks : List[Tasks] = []
+
+Base.metadata.create_all(bind=engine)
+
+def get_db():
+    db = sessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 
-app = FastAPI()
-ind : int = 1
+def load_Employees():
+    global employees
+    db = next(get_db())
+
+    db_employees = db.query(DBEmployee).all()
+
+    employees = [
+        User(
+            id=u.id,
+            name=u.name,
+            availability=u.availability,
+            skills=set(u.skills.split(",")),
+            maxWeeklyHours=u.maxWeeklyHours,
+            fatigue=u.fatigue,
+            hoursWorked=u.hoursWorked,
+            recentShift=u.recentShift
+        ) for u in db_employees
+    ]
+
+
+def load_Tasks():
+    global tasks
+    db = next(get_db())
+
+    db_tasks = db.query(DBTask).all()
+    tasks = [
+        Tasks(
+            skills=set(t.skills.split(",")),
+            time=t.time,
+            hoursRequired=t.hoursRequired,
+            members=t.members,
+            end=t.end
+        )
+        for t in db_tasks
+    ]
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("INFO:     Loading data on startup...")
+
+    load_Employees()
+    load_Tasks()
+
+    print("INFO:     Data loading complete.")
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 @app.get("/employees")
-def print_Users():
-    return users
+def print_employees():
+    return employees
 
 
 @app.post("/employees")
 def add_user(user : User):
     # mod_user = {"ind" : ind+1, **user}
-    # users.append(mod_user)
+    # employees.append(mod_user)
     # return mod_user
 
-    for i in users:
+    for i in employees:
         if i.id == user.id:
             return "User already exists..."
 
     mod_user = user.model_copy(update={"fatigue": 0, "hoursWorked": 0, "recentShift": []})
-    users.append(mod_user)
+    employees.append(mod_user)
     return mod_user
 
 @app.get("/employees/{id}")
-def print_user(id : int):
-    for i in users:
+def get_user_by_id(id : int, db: Session = Depends(get_db)):
+    for i in employees:
         if i.id == id:
             return i
     
@@ -55,11 +120,11 @@ def print_user(id : int):
 
 @app.post("/task")
 def allote_members(task : Tasks):
-    global users
+    global employees
     task = task.model_copy(update={"end": task.time + timedelta(hours=task.hoursRequired)})
-    sorted_users = sorted(users, key = lambda i : i.fatigue)
+    sorted_employees = sorted(employees, key = lambda i : i.fatigue)
     alloted : List[User] = []
-    for i in sorted_users:
+    for i in sorted_employees:
         if(len(alloted) >= task.members): 
             return alloted
         
@@ -80,6 +145,6 @@ def allote_members(task : Tasks):
             alloted.append(i)
 
     if(len(alloted) >= task.members):
-        users = sorted_users
+        employees = sorted_employees
         return alloted
     return "There are less number of employees to complete the task..."
