@@ -90,6 +90,12 @@ def allote_members(task : Tasks, db: Session = Depends(get_db)):
             break
         
         if task.skills.issubset(employee.skills):
+            if not employee.availability or len(employee.availability) < 2: continue
+
+            employee_starting = datetime.fromisoformat(employee.availability[0])
+            employee_ending = datetime.fromisoformat(employee.availability[1])
+            if employee_starting > task.time: continue
+            if employee_ending < task.end: continue
             recent_shifts_as_dates = [datetime.fromisoformat(s) for s in employee.recentShift]
             if recent_shifts_as_dates and (task.end - recent_shifts_as_dates[-1]).days >= 7:
                 employee.fatigue = 0

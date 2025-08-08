@@ -15,7 +15,7 @@ class Employee(Base):
     maxWeeklyHours = Column(Float)
     fatigue = Column(Integer, default=0)
     hoursWorked = Column(Float, default=0)
-    recentShift = Column(JSON, default=list)
+    recentShift = Column(JSON, default=lambda : [])
 
 
 class Task(Base):
