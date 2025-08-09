@@ -116,7 +116,7 @@ def register_user(user : EmployeeCreate, db : Session = Depends(get_db)):
     db.add(new_employee)
     db.commit()
     db.refresh(new_employee)
-    return user
+    return new_employee
 
 
 
@@ -138,7 +138,7 @@ def login_for_access_token(form_data : OAuth2PasswordRequestForm = Depends(), db
     return {"access_token" : access_token, "token_type" : "bearer"}
 
 @app.post("/users/me", response_model=EmployeeOut)
-def read_user_me(current_user : EmployeeOut = Depends(get_current_user)):
+def read_user_me(current_user : DBEmployee = Depends(get_current_user)):
     "Fetch details for the currently logged-in user"
     return current_user
 
@@ -152,15 +152,14 @@ def get_all_employees(db: Session = Depends(get_db)):
 @app.post("/employees", response_model=EmployeeOut, status_code=201, dependencies=[Depends(require_manager)])
 def add_employee(Employee : EmployeeCreate, db: Session = Depends(get_db)):
 
-    existing_employees = db.query(DBEmployee).filter(DBEmployee.id == Employee.id).first()
+    existing_employees = db.query(DBEmployee).filter(DBEmployee.name == Employee.name).first()
     if existing_employees:
-        raise HTTPException(status_code=400, detail="Employee with this ID already exists...")
+        raise HTTPException(status_code=400, detail="Employee with this name already exists...")
     
     availability_as_strings = [d.isoformat() for d in Employee.availability]
     hashed_password = security.get_password_hash(Employee.password)
 
     new_employee = DBEmployee(
-        id=Employee.id,
         name=Employee.name,
         hashed_password=hashed_password,
         role = Employee.role,
