@@ -1,0 +1,32 @@
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+SECRET_KEY = os.getenv("SECRET_KEY")
+ALGORITHM = os.getenv("HASHING_ALGORITHM")
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+
+pwd_context = CryptContext(schemes=["bcrypt"])
+
+def verify_password(plain_pass, hashed_pass):
+    return pwd_context.verify(plain_pass, hashed_pass)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def create_access_token(data : dict, expired_delta : Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expired_delta:
+        expire = datetime.now(timezone.utc) + expired_delta
+    
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=15)
+    
+    to_encode.update({"exp" : expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)

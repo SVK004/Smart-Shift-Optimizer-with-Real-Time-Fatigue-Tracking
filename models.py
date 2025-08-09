@@ -9,7 +9,10 @@ class Employee(Base):
     __tablename__ = "Employees"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(255))
+    name = Column(String(255), unique=True, index=True)
+    role = Column(String(255), default="employee")
+    hashed_password = Column(String(255))
+    
     availability = Column(JSON)
     skills = Column(JSON)
     maxWeeklyHours = Column(Float)

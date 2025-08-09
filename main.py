@@ -1,24 +1,37 @@
-from fastapi import FastAPI, Depends, HTTPException
-from contextlib import asynccontextmanager
+from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from database import sessionLocal, engine
 from models import Base, Employee as DBEmployee, Task as DBTask
 from pydantic import BaseModel, Field
 from typing import List
 from datetime import date, datetime, timedelta
+import security
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
-class User(BaseModel):
-    id: int
+class EmployeeBase(BaseModel):
     name : str
     availability : List[date]
     skills : set[str]
     maxWeeklyHours : float
-    fatigue : int=0
-    hoursWorked : float = 0.0
-    recentShift : List[datetime] = Field(default_factory=list)
+
+class EmployeeCreate(EmployeeBase):
+    password : str
+    role : str = "employee"
+
+
+class EmployeeOut(EmployeeBase):
+    id : int
+    fatigue : int
+    hoursWorked : float
+    recentShift : List[datetime]
+    role : str
 
     class Config:
         from_attributes = True
+
+class Token(BaseModel):
+    access_token : str
+    token_type : str
 
 class Tasks(BaseModel):
     skills : set[str]
@@ -41,27 +54,119 @@ def get_db():
 
 app = FastAPI()
 
-@app.get("/employees", response_model=List[User])
-def print_employees(db: Session = Depends(get_db)):
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+
+def get_current_user(token : str = Depends(oauth2_scheme), db : Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code = status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate" : "Bearer"}
+    )
+    try:
+        payload = security.jwt.decode(token, security.SECRET_KEY, algorithms=[security.ALGORITHM])
+        username: str = payload.get('sub')
+        if username is None:
+            raise credentials_exception
+    
+    except security.JWTError:
+        raise credentials_exception
+    
+    user = db.query(DBEmployee).filter(DBEmployee.name == username).first()
+    if user is None:
+        raise credentials_exception
+    
+    return user
+
+
+def require_manager(currentuser : DBEmployee = Depends(get_current_user)):
+    if currentuser.role != "manager":
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+    
+    return currentuser
+
+
+
+
+
+@app.post("/register", response_model=EmployeeOut, status_code=201)
+def register_user(user : EmployeeCreate, db : Session = Depends(get_db)):
+    existing_employee = db.query(DBEmployee).filter(DBEmployee.name == user.name).first()
+    if existing_employee:
+        raise HTTPException(
+            status_code=400,
+            detail="A user with this name already exists."
+        )
+    
+    user_count = db.query(DBEmployee).count()
+    if user_count == 0:
+        user.role = "manager"
+    else:
+        user.role = "employee"
+
+    hashed_password = security.get_password_hash(user.password)
+    new_employee = DBEmployee(
+        name=user.name,
+        hashed_password=hashed_password,
+        role=user.role,
+        availability=[d.isoformat() for d in user.availability],
+        skills=list(user.skills),
+        maxWeeklyHours=user.maxWeeklyHours
+    )
+    db.add(new_employee)
+    db.commit()
+    db.refresh(new_employee)
+    return user
+
+
+
+
+
+
+
+@app.post("/token", response_model=Token)
+def login_for_access_token(form_data : OAuth2PasswordRequestForm = Depends(), db : Session = Depends(get_db)):
+    user = db.query(DBEmployee).filter(form_data.username == DBEmployee.name).first()
+
+    if not user or not security.verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Incorrect username or password"
+        )
+    
+    access_token = security.create_access_token(data={"sub" : user.name})
+    return {"access_token" : access_token, "token_type" : "bearer"}
+
+@app.post("/users/me", response_model=EmployeeOut)
+def read_user_me(current_user : EmployeeOut = Depends(get_current_user)):
+    "Fetch details for the currently logged-in user"
+    return current_user
+
+
+@app.get("/employees", response_model=List[EmployeeOut], dependencies=[Depends(require_manager)])
+def get_all_employees(db: Session = Depends(get_db)):
     employees = db.query(DBEmployee).all()
     return employees
 
 
-@app.post("/employees", response_model=User, status_code=201)
-def add_user(user : User, db: Session = Depends(get_db)):
+@app.post("/employees", response_model=EmployeeOut, status_code=201, dependencies=[Depends(require_manager)])
+def add_employee(Employee : EmployeeCreate, db: Session = Depends(get_db)):
 
-    existing_employees = db.query(DBEmployee).filter(DBEmployee.id == user.id).first()
+    existing_employees = db.query(DBEmployee).filter(DBEmployee.id == Employee.id).first()
     if existing_employees:
         raise HTTPException(status_code=400, detail="Employee with this ID already exists...")
     
-    availability_as_strings = [d.isoformat() for d in user.availability]
-    
+    availability_as_strings = [d.isoformat() for d in Employee.availability]
+    hashed_password = security.get_password_hash(Employee.password)
+
     new_employee = DBEmployee(
-        id=user.id,
-        name=user.name,
+        id=Employee.id,
+        name=Employee.name,
+        hashed_password=hashed_password,
+        role = Employee.role,
         availability=availability_as_strings,
-        skills=list(user.skills), 
-        maxWeeklyHours=user.maxWeeklyHours
+        skills=list(Employee.skills), 
+        maxWeeklyHours=Employee.maxWeeklyHours
     )
 
     db.add(new_employee)
@@ -71,7 +176,7 @@ def add_user(user : User, db: Session = Depends(get_db)):
     return new_employee
 
 @app.get("/employees/{id}")
-def get_user_by_id(id : int, db: Session = Depends(get_db)):
+def get_Employee_by_id(id : int, db: Session = Depends(get_db)):
     employee = db.query(DBEmployee).filter(DBEmployee.id == id).first()
 
     if employee is None:
@@ -82,6 +187,18 @@ def get_user_by_id(id : int, db: Session = Depends(get_db)):
 @app.post("/task")
 def allote_members(task : Tasks, db: Session = Depends(get_db)):
     task.end = task.time + timedelta(hours=task.hoursRequired)
+
+    new_task = DBTask(
+        skills=list(task.skills),
+        time=task.time,
+        hoursRequired=task.hoursRequired,
+        members=task.members,
+        end=task.end
+    )
+
+    db.add(new_task)
+
+
     employees = db.query(DBEmployee).all()
     sorted_employees = sorted(employees, key = lambda i : i.fatigue)
     alloted : List[DBEmployee] = []
