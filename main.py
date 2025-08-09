@@ -3,21 +3,21 @@ from sqlalchemy.orm import Session
 from database import sessionLocal, engine
 from models import Base, Employee as DBEmployee, Task as DBTask
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Optional
 from datetime import date, datetime, timedelta
 import security
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
 class EmployeeBase(BaseModel):
     name : str
-    availability : List[date]
+    # availability : List[date]
     skills : set[str]
     maxWeeklyHours : float
 
 class EmployeeCreate(EmployeeBase):
     password : str
     role : str = "employee"
-
+    availability : Optional[List[date]] = []
 
 class EmployeeOut(EmployeeBase):
     id : int
@@ -183,7 +183,7 @@ def get_Employee_by_id(id : int, db: Session = Depends(get_db)):
     
     return employee
 
-@app.post("/task")
+@app.post("/task", response_model=EmployeeOut, dependencies=[Depends(require_manager)])
 def allote_members(task : Tasks, db: Session = Depends(get_db)):
     task.end = task.time + timedelta(hours=task.hoursRequired)
 
