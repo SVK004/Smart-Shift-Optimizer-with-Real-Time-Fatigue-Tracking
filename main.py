@@ -101,8 +101,6 @@ def register_user(user : EmployeeCreate, db : Session = Depends(get_db)):
     user_count = db.query(DBEmployee).count()
     if user_count == 0:
         user.role = "manager"
-    else:
-        user.role = "employee"
 
     hashed_password = security.get_password_hash(user.password)
     new_employee = DBEmployee(
@@ -117,10 +115,6 @@ def register_user(user : EmployeeCreate, db : Session = Depends(get_db)):
     db.commit()
     db.refresh(new_employee)
     return new_employee
-
-
-
-
 
 
 
@@ -183,7 +177,7 @@ def get_Employee_by_id(id : int, db: Session = Depends(get_db)):
     
     return employee
 
-@app.post("/task", response_model=EmployeeOut, dependencies=[Depends(require_manager)])
+@app.post("/task", response_model=List[EmployeeOut], dependencies=[Depends(require_manager)])
 def allote_members(task : Tasks, db: Session = Depends(get_db)):
     task.end = task.time + timedelta(hours=task.hoursRequired)
 
@@ -209,10 +203,13 @@ def allote_members(task : Tasks, db: Session = Depends(get_db)):
             if not employee.availability or len(employee.availability) < 2: continue
 
             employee_starting = datetime.fromisoformat(employee.availability[0])
-            employee_ending = datetime.fromisoformat(employee.availability[1])
+            employee_ending = datetime.fromisoformat(employee.availability[1])  + timedelta(days=1)
+
             if employee_starting > task.time: continue
             if employee_ending < task.end: continue
+            
             recent_shifts_as_dates = [datetime.fromisoformat(s) for s in employee.recentShift]
+            
             if recent_shifts_as_dates and (task.end - recent_shifts_as_dates[-1]).days >= 7:
                 employee.fatigue = 0
                 employee.hoursWorked = 0
